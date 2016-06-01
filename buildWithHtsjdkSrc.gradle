@@ -1,0 +1,172 @@
+import javax.tools.ToolProvider
+import org.ajoberstar.grgit.*
+
+buildscript {
+    repositories {
+        mavenCentral()
+    }
+}
+
+plugins {
+    id "java"
+    id 'maven'
+    id 'signing'
+    id 'jacoco'
+    id 'com.palantir.git-version' version '0.5.1'
+    id 'com.github.johnrengelman.shadow' version '1.2.3'
+    id "com.github.kt3k.coveralls" version "2.6.3"
+    id 'org.ajoberstar.grgit' version "1.4.2"
+}
+
+repositories {
+    mavenCentral()
+    // Include the Broad artifactory for intel-gkl snapshots. This is temporary
+    // until intel-gkl is available on maven central.
+    //maven {
+    //    url "https://artifactory.broadinstitute.org/artifactory/libs-snapshot/"
+    //}
+}
+
+jacocoTestReport {
+    dependsOn test
+    group = "Reporting"
+    description = "Generate Jacoco coverage reports after running tests."
+    additionalSourceDirs = files(sourceSets.main.allJava.srcDirs)
+
+    reports {
+        xml.enabled = true // coveralls plugin depends on xml format report
+        html.enabled = true
+    }
+}
+
+jacoco {
+    toolVersion = "0.7.5.201505241946"
+}
+
+dependencies {
+    compile 'com.google.guava:guava:15.0'
+    compile fileTree(include: ['*.jar'], dir: 'htsjdk/build/libs')
+    //tools dependency for doclet
+    compile(files(((URLClassLoader) ToolProvider.getSystemToolClassLoader()).getURLs()))
+    testCompile 'org.testng:testng:6.9.10'
+}
+
+sourceCompatibility = 1.8
+targetCompatibility = 1.8
+
+final isRelease = Boolean.getBoolean("release")
+final gitVersion = gitVersion().replaceAll(".dirty", "")
+version = isRelease ? gitVersion : gitVersion + "-SNAPSHOT"
+
+logger.info("build for version:" + version)
+group = 'com.github.broadinstitute'
+
+defaultTasks 'jar'
+
+task cloneHtsjdk << {
+    Grgit.clone(dir: file('htsjdk'), uri: 'git@github.com:samtools/htsjdk.git')
+}
+
+task buildHtsjdk(type: GradleBuild) {
+    buildFile = 'htsjdk/build.gradle'
+    if (!file('htsjdk').exists()) buildHtsjdk.dependsOn cloneHtsjdk
+}
+
+jar {
+    manifest {
+        attributes 'Implementation-Title': 'Picard',
+                'Implementation-Vendor': 'Broad Institute',
+                'Implementation-Version': version
+    }
+    jar.dependsOn buildHtsjdk
+}
+
+
+import org.gradle.internal.os.OperatingSystem;
+
+tasks.withType(Test) {
+    outputs.upToDateWhen { false } // tests will always rerun
+    useTestNG()
+
+    // set heap size for the test JVM(s)
+    minHeapSize = "1G"
+    maxHeapSize = "2G"
+
+    jvmArgs '-Djava.awt.headless=true'  //this prevents awt from displaying a java icon while the tests are running
+
+    if (System.env.CI == "true") {  //if running under a CI output less into the logs
+        int count = 0
+
+        beforeTest { descriptor ->
+            count++
+            if (count % 100 == 0) {
+                logger.lifecycle("Finished " + Integer.toString(count++) + " tests")
+            }
+        }
+    } else {
+        // show standard out and standard error of the test JVM(s) on the console
+        testLogging.showStandardStreams = true
+        beforeTest { descriptor ->
+            logger.lifecycle("Running Test: " + descriptor)
+        }
+
+        // listen to standard out and standard error of the test JVM(s)
+        onOutput { descriptor, event ->
+            logger.lifecycle("Test: " + descriptor + " produced standard out/err: " + event.message)
+        }
+    }
+
+    testLogging {
+        testLogging {
+            events "skipped", "failed"
+            exceptionFormat = "full"
+        }
+        afterSuite { desc, result ->
+            if (!desc.parent) { // will match the outermost suite
+                println "Results: ${result.resultType} (${result.testCount} tests, ${result.successfulTestCount} successes, ${result.failedTestCount} failures, ${result.skippedTestCount} skipped)"
+            }
+        }
+    }
+}
+
+test {
+    description = "Runs the unit tests other than the SRA tests"
+
+    useTestNG {
+        if (OperatingSystem.current().isUnix()) {
+            excludeGroups "slow", "broken"
+        } else {
+            excludeGroups "slow", "broken", "unix"
+        }
+    }
+}
+
+task wrapper(type: Wrapper) {
+    description = "Regenerate the gradle wrapper"
+    gradleVersion = '2.13'
+}
+
+// This is a hack to disable the java 8 default javadoc lint until we fix the html formatting
+if (JavaVersion.current().isJava8Compatible()) {
+    tasks.withType(Javadoc) {
+        options.addStringOption('Xdoclint:none', '-quiet')
+    }
+}
+
+task javadocJar(type: Jar, dependsOn: javadoc) {
+    classifier = 'javadoc'
+    from 'build/docs/javadoc'
+}
+
+task sourcesJar(type: Jar) {
+    from sourceSets.main.allSource
+    classifier = 'sources'
+}
+
+task libJar(type: Jar) {
+    from sourceSets.main.resources
+    include('**/*.R')
+    from sourceSets.main.runtimeClasspath
+    include('picard/**/*.*')
+    classifier = 'lib'
+}
