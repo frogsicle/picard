@@ -41,7 +41,7 @@ jacoco {
 
 dependencies {
     compile 'com.google.guava:guava:15.0'
-    compile 'com.github.samtools:htsjdk:2.4.1'
+    compile ('com.github.samtools:htsjdk:2.4.1')
     //tools dependency for doclet
     compile(files(((URLClassLoader) ToolProvider.getSystemToolClassLoader()).getURLs()))
     testCompile 'org.testng:testng:6.9.10'
@@ -93,17 +93,27 @@ tasks.withType(Test) {
     // set heap size for the test JVM(s)
     minHeapSize = "1G"
     maxHeapSize = "2G"
+    if (System.env.CI == "true") {  //if running under a CI output less into the logs
+        int count = 0
 
-    testLogging.showStandardStreams = true
-    beforeTest { descriptor ->
-        logger.lifecycle("Running Test: " + descriptor)
+        beforeTest { descriptor ->
+            count++
+            if( count % 100 == 0) {
+                logger.lifecycle("Finished "+ Integer.toString(count++) + " tests")
+            }
+        }
+    } else {
+        // show standard out and standard error of the test JVM(s) on the console
+        testLogging.showStandardStreams = true
+        beforeTest { descriptor ->
+            logger.lifecycle("Running Test: " + descriptor)
+        }
+
+        // listen to standard out and standard error of the test JVM(s)
+        onOutput { descriptor, event ->
+            logger.lifecycle("Test: " + descriptor + " produced standard out/err: " + event.message )
+        }
     }
-
-    // listen to standard out and standard error of the test JVM(s)
-    onOutput { descriptor, event ->
-        logger.lifecycle("Test: " + descriptor + " produced standard out/err: " + event.message)
-    }
-
 
     testLogging {
         testLogging {
